@@ -1,0 +1,6 @@
+env/
+venv/
+test.ipynb
+__pycache__/
+app/__pycache__/
+app/input_sentences.json
