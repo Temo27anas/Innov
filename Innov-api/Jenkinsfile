@@ -1,0 +1,300 @@
+/*********************************************************************************/
+/*THIS PIPELINE IS DYNAMIC, IT IS DEDICATED FOR BUILD AND DEPLOY, OR DEPLOY ONLY!*/
+/*********************************************************************************/
+
+/*We need a variable to store the status of the existence of the searched image*/
+def ENV_DIR_EXIST
+def IMAGE_EXIST
+def IMAGE_TAG
+def configuration = [vaultUrl: 'http://10.0.4.142:8200',  vaultCredentialId: 'vault-jenkins-approle',  engineVersion:2]
+def secrets = [
+    [path: 'datalab/AWS_CREDENTIALS', engineVersion:2, secretValues: [
+        [envVar: 'AWS_ACCESS_KEY_ID', vaultKey: 'AWS_ACCESS_KEY_ID'],
+        [envVar: 'AWS_SECRET_ACCESS_KEY', vaultKey: 'AWS_SECRET_ACCESS_KEY']
+    ]],
+    [path: 'datalab/ELASTIC_SEARCH_CREDENTIALS', engineVersion:2, secretValues: [
+        [envVar: 'ES_LABELS_INDEX', vaultKey: 'ES_LABELS_INDEX'],
+        [envVar: 'ES_TOKEN', vaultKey: 'ES_TOKEN']
+    ]],
+    [path: 'datalab/MLFLOW_CREDENTIALS', engineVersion:2, secretValues: [
+        [envVar: 'MLFLOW_TRACKING_USERNAME', vaultKey: 'MLFLOW_TRACKING_USERNAME'],
+        [envVar: 'MLFLOW_TRACKING_PASSWORD', vaultKey: 'MLFLOW_TRACKING_PASSWORD']
+    ]],
+    [path: 'datalab/MLFLOW_S3_ENDPOINT_URL', engineVersion:2, secretValues: [
+        [envVar: 'MLFLOW_S3_ENDPOINT_URL', vaultKey: 'MLFLOW_S3_ENDPOINT_URL']
+    ]],
+    [path: 'datalab/NEXUS_CREDENTIALS', engineVersion:2, secretValues: [
+        [envVar: 'NEXUS_USERNAME', vaultKey: 'NEXUS_USERNAME'],
+        [envVar: 'NEXUS_PASSWORD', vaultKey: 'NEXUS_PASSWORD']
+    ]],
+    [path: 'datalab/POSTGRES_DB_CREDENTIALS', engineVersion:2, secretValues: [
+        [envVar: 'POSTGRES_DB_HOST', vaultKey: 'POSTGRES_DB_HOST'],
+        [envVar: 'POSTGRES_DB_PASSWORD', vaultKey: 'POSTGRES_DB_PASSWORD'],
+        [envVar: 'POSTGRES_DB_PORT', vaultKey: 'POSTGRES_DB_PORT'],
+        [envVar: 'POSTGRES_DB_USER', vaultKey: 'POSTGRES_DB_USER']
+    ]],
+    [path: 'datalab/TRACKING_URI', engineVersion:2, secretValues: [
+        [envVar: 'TRACKING_URI', vaultKey: 'TRACKING_URI']
+    ]]
+]
+
+pipeline {
+
+    environment {
+        AWS_ACCESS_KEY_ID="${env.AWS_ACCESS_KEY_ID}"
+        AWS_SECRET_ACCESS_KEY="${env.AWS_SECRET_ACCESS_KEY}"
+        MLFLOW_TRACKING_USERNAME="${env.MLFLOW_TRACKING_USERNAME}"
+        MLFLOW_TRACKING_PASSWORD="${env.MLFLOW_TRACKING_PASSWORD}"
+        MLFLOW_S3_ENDPOINT_URL="${env.MLFLOW_S3_ENDPOINT_URL}"
+        TRACKING_URI="${env.TRACKING_URI}"
+        ES_LABELS_INDEX="${env.ES_LABELS_INDEX}"
+        ES_TOKEN="${env.ES_TOKEN}"
+        NEXUS_USERNAME="${env.NEXUS_USERNAME}"
+        NEXUS_PASSWORD="${env.NEXUS_PASSWORD}"
+        POSTGRES_DB_HOST="${env.POSTGRES_DB_HOST}"
+        POSTGRES_DB_PASSWORD="${env.POSTGRES_DB_PASSWORD}"
+        POSTGRES_DB_PORT="${env.POSTGRES_DB_PORT}"
+        POSTGRES_DB_USER="${env.POSTGRES_DB_USER}"
+    }
+
+    /*Here you can specify a machine linked to jenkins controller, in which you want jenkins to execute the tasks*/
+    /*In case you have no preferences, use any. That means your tasks will be executed on any available agent*/
+    agent any
+
+    stages {
+
+        stage('Env Vars Existence Check') {
+            steps {
+                script {
+                    ENV_DIR_EXIST = sh(
+                        script: 'find . -name "*env*" -type d -maxdepth 1 -print -quit',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Release or Merge Check') {
+            steps {
+                script {
+                    echo GIT_BRANCH
+                    echo env.gitlabActionType
+                    if ((env.gitlabActionType == null) && (GIT_BRANCH=='origin/main' || GIT_BRANCH=='origin/master')){
+                        echo "webhook type: release"
+                        IMAGE_TAG = sh(returnStdout: true, script: 'git describe --tags $(git rev-list --tags --max-count=1)').trim()
+                        echo "The image tag will be the release tag: ${IMAGE_TAG}"
+                    } else if (env.gitlabActionType == 'MERGE' || env.gitlabActionType == 'PUSH') {
+                        echo "webhook type: merge or push"
+                        IMAGE_TAG = GIT_COMMIT.substring(0,4)
+                        echo "The image tag will be the first 4 chars of the commit hash: ${IMAGE_TAG}"
+                    } else {
+                        echo "no webhook, manually triggered"        
+                        IMAGE_TAG = GIT_COMMIT.substring(0,4)
+                        echo "The image tag will be the first 4 chars of the commit hash: ${IMAGE_TAG}"                
+                    }
+                }
+
+            }
+        }
+
+        stage('File Valuation') {
+            /*This stage is dedicated to pass the jenkins parameters values to local variables that will be used in specific files*/
+            steps {
+                withVault([configuration: configuration, vaultSecrets: secrets]){
+                    script {
+                        IMAGE_TAG = IMAGE_TAG
+                        sh '''
+                        echo
+                        echo "File valuation - Begin"
+                        sed -i "s|<VERSION>|'''+IMAGE_TAG+'''|" docker-compose.yml
+                        sed -i "s|<REGISTRY>|${REGISTRY}|" docker-compose.yml
+                        sed -i "s|<IMAGE_NAME>|${IMAGE_NAME}|" docker-compose.yml
+                        sed -i "s|<PORT>|${PORT}|" docker-compose.yml
+                        '''
+                        if(ENV_DIR_EXIST){
+                            sh'''
+                            sed -i "s|<MLFLOW_S3_ENDPOINT_URL>|${MLFLOW_S3_ENDPOINT_URL}|" env_files/local.env
+                            sed -i "s|<AWS_ACCESS_KEY_ID>|${AWS_ACCESS_KEY_ID}|" env_files/local.env
+                            sed -i "s|<AWS_SECRET_ACCESS_KEY>|${AWS_SECRET_ACCESS_KEY}|" env_files/local.env
+                            sed -i "s|<MLFLOW_TRACKING_USERNAME>|${MLFLOW_TRACKING_USERNAME}|" env_files/local.env
+                            sed -i "s|<MLFLOW_TRACKING_PASSWORD>|${MLFLOW_TRACKING_PASSWORD}|" env_files/local.env
+                            sed -i "s|<TRACKING_URI>|${TRACKING_URI}|" env_files/local.env
+                            sed -i "s|<ES_LABELS_INDEX>|${ES_LABELS_INDEX}|" env_files/local.env
+                            sed -i "s|<ES_TOKEN>|${ES_TOKEN}|" env_files/local.env
+                            sed -i "s|<NEXUS_USERNAME>|${NEXUS_USERNAME}|" env_files/local.env
+                            sed -i "s|<NEXUS_PASSWORD>|${NEXUS_PASSWORD}|" env_files/local.env
+                            sed -i "s|<POSTGRES_DB_HOST>|${POSTGRES_DB_HOST}|" env_files/local.env
+                            sed -i "s|<POSTGRES_DB_PASSWORD>|${POSTGRES_DB_PASSWORD}|" env_files/local.env
+                            sed -i "s|<POSTGRES_DB_PORT>|${POSTGRES_DB_PORT}|" env_files/local.env
+                            sed -i "s|<POSTGRES_DB_USER>|${POSTGRES_DB_USER}|" env_files/local.env
+                            '''
+                        }
+                        sh'''
+                        echo "File valuation - End"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Image Existence Check'){
+            steps{
+                script {
+                    IMAGE_EXIST = sh (script: 'set +e ; sudo docker manifest inspect ${REGISTRY}/datalab/${IMAGE_NAME}:'+IMAGE_TAG+' > /dev/null ; echo $? ;set -e', returnStdout: true).trim()
+                    echo IMAGE_EXIST
+                }
+            }
+        }
+
+        stage('Image Build') {
+            /*We add a condition in the build stage, this condition is based on the existence of an image tagged with the current commit, if no, build it, if yes, deploy it directly and skip the build stages*/
+            when{
+                equals(actual: IMAGE_EXIST, expected: '1')
+            }
+            steps {
+                /*Shell script*/
+                sh '''
+                echo "Building image - Begin"
+                sudo docker build -t ${IMAGE_NAME}:'''+IMAGE_TAG+''' .
+                sudo docker tag ${IMAGE_NAME}:'''+IMAGE_TAG+''' ${REGISTRY}/datalab/${IMAGE_NAME}:'''+IMAGE_TAG+'''
+                echo "Building image - End"
+                '''
+                /*The most changed or the sensitive variables should be declared in the pipeline parameters https://devopscube.com/declarative-pipeline-parameters/*/
+                /*The stables or non-sensitive ones could be declared in the environment section*/
+            }
+        }
+
+        stage('Image Vulnerability scan'){
+            when{
+                equals(actual: IMAGE_EXIST, expected: '1')
+            }
+            /*This stage is dedicated to scan the built*/
+            steps{
+                sh 'sudo docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --format template --template "@contrib/html.tpl" ${REGISTRY}/datalab/${IMAGE_NAME}:'+IMAGE_TAG+' > vulnerability_scan_report.html'
+            }
+        }
+
+        stage('Image Push to Registry') {
+            when{
+                equals(actual: IMAGE_EXIST, expected: '1')
+            }
+            /*This stage is dedicated to push the tagged docker image to the private docker registry*/
+            steps {
+                sh '''
+                echo "Push to Registry - Begin"
+                sudo docker push ${REGISTRY}/datalab/${IMAGE_NAME}:'''+IMAGE_TAG+'''
+                echo "Push to Registry - End"
+                '''
+            }
+        }
+
+        stage('Remove Unused Images') {
+            when{
+                equals(actual: IMAGE_EXIST, expected: '1')
+            }
+            /*This stage is IMPORTANT in term of storage optimization, it's dedicated to delete the local docker images containing our image name after the tagged image is pushed*/
+            steps {
+                sh '''
+                echo "Remove Unused docker image - Begin"
+                sudo docker rmi -f $(sudo docker images --filter=reference="*${IMAGE_NAME}:*" -q)
+                echo "Remove Unused docker image - End"
+                '''
+            }
+        }
+
+        stage ('Deploy'){
+            /*This stage is dedicated to copy the necessary deployment files to a specific directory in the target server, and than execute the deployment commands*/
+            steps {
+                /*IMPORTANT! in case of GPU server, for the dev environment name the target forlder with dev-${IMAGE_NAME}, also for int environment int-${IMAGE_NAME}*/
+                sh '''
+                ssh -p ${SSH_PORT} -vv jenkins@${HOST} mkdir -p /var/opt/${IMAGE_NAME}/
+                scp -P ${SSH_PORT} -p docker-compose.yml jenkins@${HOST}:${HOME}
+                ssh -p ${SSH_PORT} jenkins@${HOST} cp ${HOME}/docker-compose.yml /var/opt/${IMAGE_NAME}/
+                ssh -p ${SSH_PORT} jenkins@${HOST} "rm -rf ${HOME}/docker-compose.yml"
+                '''
+                script{
+                    if(ENV_DIR_EXIST){
+                        sh'''
+                        scp -P ${SSH_PORT} -rp env_files jenkins@${HOST}:${HOME}
+                        ssh -p ${SSH_PORT} jenkins@${HOST} cp -r ${HOME}/env_files /var/opt/${IMAGE_NAME}/
+                        ssh -p ${SSH_PORT} jenkins@${HOST} "rm -rf ${HOME}/env_files"
+                        '''
+                    }
+                }
+                sh'''
+                ssh -p ${SSH_PORT} jenkins@${HOST} ls -ltr /var/opt/${IMAGE_NAME}
+                ssh -p ${SSH_PORT} jenkins@${HOST} docker-compose -f /var/opt/${IMAGE_NAME}/docker-compose.yml up -d
+                ssh -p ${SSH_PORT} jenkins@${HOST} docker ps
+                ssh -p ${SSH_PORT} jenkins@${HOST} docker images | grep ${REGISTRY}/datalab/${IMAGE_NAME}
+                '''
+                script{
+                    try {
+                        sh '''ssh -p ${SSH_PORT} jenkins@${HOST} docker rmi --force $(ssh -p ${SSH_PORT} jenkins@${HOST} docker images --filter=reference=${REGISTRY}/datalab/${IMAGE_NAME} -q)'''
+                    } catch (Exception e) {
+                        println "Error occurred while removing Docker image: ${e.getMessage()}"
+                    }
+                }
+                sh '''ssh -p ${SSH_PORT} jenkins@${HOST} docker images --filter=reference=${REGISTRY}/datalab/${IMAGE_NAME}'''
+            }
+        }
+
+        stage('Clean Docker Registry') {
+            when{
+                equals(actual: IMAGE_EXIST, expected: '1')
+            }
+            /*This stage is IMPORTANT in term of storage optimization, it's dedicated to delete the local docker images containing our image name after the tagged image is pushed*/
+            steps {
+                sh '''
+                sudo docker run docker-registry.leyton.com:5000/datalab/docker-registry-cleaner:latest datalab/${IMAGE_NAME} -r http://docker-registry.leyton.com -n 5 -u docker -p docker
+                sudo docker rmi -f docker-registry.leyton.com:5000/datalab/docker-registry-cleaner:latest 
+                '''
+            }
+        }
+
+    }
+
+
+    post {
+        always {
+
+            /*Archive and publish the scan report*/
+            archiveArtifacts artifacts: "vulnerability_scan_report.html", fingerprint: true
+            publishHTML (target: [
+                allowMissing: false,
+                alwaysLinkToLastBuild: false,
+                keepAll: true,
+                reportDir: '.',
+                reportFiles: 'vulnerability_scan_report.html',
+                reportName: 'Vulnerability Scan Report',
+            ])
+
+            echo 'One way or another, I have finished'
+            deleteDir() /*IMPORTANT FOR ALL PIPELINES! clean up our workspace, to avoid saturating the Jenkins server storage*/
+            
+            script {
+                /* Custom data map for InfluxDB */
+                def custom = [:]
+                custom['git_branch']    = env.GIT_BRANCH
+                custom['git_url']       = env.GIT_URL
+                custom['build_url']     = env.BUILD_URL
+                custom['git_commit']    = env.GIT_COMMIT
+                custom['build_status']  = currentBuild.result
+                influxDbPublisher(selectedTarget: 'InfluxDB Grafana', customData: custom, jenkinsEnvParameterTag: 'env=${CURRENT_ENV}', customProjectName: '${IMAGE_NAME}')
+            }
+
+        }
+
+        success {
+            echo 'I succeeeded!'
+        }
+
+        unstable {
+            echo 'I am unstable :/'
+        }
+
+        failure {
+            echo 'I failed :('
+        }
+    }
+
+}

@@ -1,0 +1,18 @@
+version: "3.7"
+
+services:
+  app:
+    container_name: "<IMAGE_NAME>"
+    image: "<REGISTRY>/datalab/<IMAGE_NAME>:<VERSION>"
+    restart: always
+    ports:
+      - "<PORT>:5607" #IMPORTANT : Replace 'container_port' with your container exposed port
+    environment: 
+      - WEB_CONCURRENCY = <WEB_CONCURRENCY>
+
+    healthcheck:
+      test: curl --fail http://localhost:container_port || exit 1 #IMPORTANT : Replace 'container_port' with your container exposed port
+      interval: 1s
+      retries: 5
+      start_period: 20s
+      timeout: 10s

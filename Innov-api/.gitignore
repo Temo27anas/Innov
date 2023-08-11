@@ -1,0 +1,10 @@
+__pycache__/
+Testing Notebooks/
+api/Testing Notebooks/
+data/
+venv/
+venv/Lib/
+api/__pycache__/
+api/models/model_v7.pth
+env_files/test.env
+api/mlruns/

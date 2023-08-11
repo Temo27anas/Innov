@@ -1,0 +1,8 @@
+version: "3.7"
+
+services:
+ app:
+   image: is-inno-api
+   restart: on-failure
+   env_file:
+     - env_files/test.env
